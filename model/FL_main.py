@@ -1,6 +1,7 @@
 import os
 
 import copy
+import sys
 import time
 import pickle
 import numpy as np
@@ -14,19 +15,15 @@ from opacus.validators import ModuleValidator
 from collections import OrderedDict
 
 if __name__ == '__main__':
+    np.random.seed(1)
     start_time = time.time()
-
     # define paths
     path_project = os.path.abspath('..')
     args = args_parser()
     exp_details(args)
-
-    # if args.gpu_id:
-    #     torch.cuda.set_device(args.gpu_id)
     device = torch.device('cuda') if args.gpu else torch.device('cpu')
-
+    # prepare train/test dataset
     TrainSet_per_client, TestSet_per_client = get_dataset(args)
-
     # BUILD MODEL
     global_model = Initialize_Model(args)
     errors = ModuleValidator.validate(global_model, strict=False)
@@ -37,21 +34,17 @@ if __name__ == '__main__':
     global_model.to(device)
     global_model.train()
     print(global_model)
-
     # copy weights
     global_weights = global_model.state_dict()
-
     # Training
     train_loss, train_accuracy = [], []
     val_acc_list, net_list = [], []
     cv_loss, cv_acc = [], []
     print_every = 1
     val_loss_pre, counter = 0, 0
-
     # load dataset and user groups
     TrainSet_per_client, TestSet_per_client = get_dataset(args)
     # fig = plot_dis(TrainSet_per_client)
-    pass
     # instantiate client objects
     client_lst = []
     for idx in range(args.num_clients):
@@ -66,12 +59,12 @@ if __name__ == '__main__':
         # FL training
         local_weights, local_losses, local_acc = [], [], []
         for idx in selected_clients:
-            """
-            w, loss, acc = client_lst[idx].update_model(global_round=epoch, 
-                                                    privacy_budget=args.epsilon)
-            use this code, update_model get model from the previous round will incur 
-            "Trying to add hooks twice to the same model" error. Each round
-            """
+            ###
+            # w, loss, acc = client_lst[idx].update_model(global_round=epoch,
+            #                                         privacy_budget=args.epsilon)
+            # use this code, update_model get model from the previous round will incur
+            # "Trying to add hooks twice to the same model" error. Each round
+            ###
             w, loss, acc = client_lst[idx].update_model(global_round=epoch,
                                                     model_weights=global_weights,
                                                     privacy_budget=args.epsilon)
@@ -107,7 +100,7 @@ if __name__ == '__main__':
             print(f'Training Loss : {np.mean(np.array(train_loss))}')
             print('Train Accuracy: {:.2f}% \n'.format(100 * train_accuracy[-1]))
             print(f'accuracy of each client: {list_acc}')
-            
+
     # Test inference after completion of training
     # test_acc, test_loss = test_inference(args, global_model, TestSet_per_client)
     test_acc = np.mean([client_lst[i].acc for i in range(args.num_clients)])
@@ -122,7 +115,7 @@ if __name__ == '__main__':
     if not os.path.exists(save_path):
         os.mkdir(save_path)
     file_name = os.path.join(save_path, '{}_{}_{}_C[{}]_iid[{}]_E[{}]_B[{}].pkl'. \
-                             format(args.dataset, args.model, args.epochs, args.frac, 
+                             format(args.dataset, args.model, args.epochs, args.frac,
                                     args.iid, args.local_ep, args.local_bs))
     with open(file_name, 'wb') as f:
         pickle.dump([train_loss, train_accuracy], f)

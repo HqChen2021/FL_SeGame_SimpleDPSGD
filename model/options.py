@@ -17,7 +17,7 @@ def args_parser():
                         help='the fraction of clients: C')
     parser.add_argument('--local_ep', type=int, default=5,
                         help="the number of local epochs: E")
-    parser.add_argument('--local_bs', type=int, default=10,
+    parser.add_argument('--local_bs', type=int, default=16,
                         help="local batch size: B")
     parser.add_argument('--lr', type=float, default=0.01,
                         help='learning rate')
@@ -46,7 +46,7 @@ def args_parser():
                         help="traget privacy budget")
     parser.add_argument('--MAX_GRAD_NORM', type=float, default=1.2,
                         help="max gradient norm of SGD")
-    parser.add_argument('--MAX_PHYSICAL_BATCH_SIZE', type=int, default=32,
+    parser.add_argument('--MAX_PHYSICAL_BATCH_SIZE', type=int, default=64,
                         help="max physical bathc size")
 
     # other arguments

@@ -76,7 +76,7 @@ class client(object):
                     images, target = images.to(self.device), target.to(self.device)
                     # model.zero_grad() the same as optimizer.zero_grad()
                     # calculate batch loss
-                    output = model(images)
+                    output = model(images).to(self.device)
                     loss = self.criterion(output, target)
                     batch_loss.append(loss.item())
                     # calculate batch accuracy
@@ -107,7 +107,7 @@ class client(object):
         batch_acc, batch_loss = [], []
         for batch_idx, (images, target) in enumerate(self.test_loader):
             images, target = images.to(self.device), target.to(self.device)
-            output = model(images)
+            output = model(images).to(self.device)
             loss = self.criterion(output, target)
             batch_loss.append(loss.item())
             preds = np.argmax(output.detach().cpu().numpy(), axis=1)
