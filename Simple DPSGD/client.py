@@ -11,10 +11,23 @@ from opacus.utils.batch_memory_manager import BatchMemoryManager
 from utils import Initialize_Model
 from collections import OrderedDict
 from DPOptimizerClass import DPOptimizer
+from opacus.validators import ModuleValidator
+from opacus import GradSampleModule
+
+
+def creat_model(args):
+    if args.is_dp:
+        model = GradSampleModule(Initialize_Model(args))
+        errors = ModuleValidator.validate(model, strict=False)
+        if errors:
+            model = ModuleValidator.fix(model)
+    else:
+        model = Initialize_Model(args)
+    return model
 
 
 class client(object):
-    def __init__(self, cid, args, global_model, train_set, test_set):
+    def __init__(self, cid, args, train_set, test_set):
         self.cid = cid
         self.args = args
         self.device = torch.device('cuda') if args.gpu else torch.device('cpu')
@@ -24,9 +37,10 @@ class client(object):
             train_set, batch_size=args.local_bs, shuffle=True)
         self.test_loader = torch.utils.data.DataLoader(
             test_set, batch_size=args.local_bs, shuffle=True)
-        self.acc, self.loss, self.eps = [], [], {}
+        self.acc, self.loss, self.z = [], [], {}
         self.target_acc = args.target_acc
-        self.model = copy.deepcopy(global_model)
+        self.model = creat_model(args)
+        hasattr(next(self.model.parameters()), 'grad_sample')
         self.noise_multiplier = self.args.noise_multiplier
 
     # c #actual nosie added into gards is N(0,z^2*c^2)
@@ -44,12 +58,15 @@ class client(object):
                 model.load_state_dict(new_global_weights)
             return model
 
-    def train(self, model, optimizer, dataloader):
+    def train(self, model, dp_optimizer, optimizer, dataloader):
         epoch_loss, epoch_acc = [], []
         for epoch in range(self.args.local_ep):
             batch_loss, batch_acc = [], []
             for batch_idx, (images, target) in enumerate(dataloader):
-                optimizer.zero_grad()
+                if epoch != self.args.local_ep - 1:
+                    optimizer.zero_grad()
+                else:
+                    dp_optimizer.zero_grad()
                 images, target = images.to(self.device), target.to(self.device)
                 output = model(images)
                 loss = self.criterion(output, target)
@@ -58,39 +75,73 @@ class client(object):
                 labels = target.detach().cpu().numpy()
                 batch_acc.append((preds == labels).mean().item())
                 loss.backward()  # at this step the model should have stored the gradients
-                optimizer.step()
+                if epoch != self.args.local_ep - 1:
+                    optimizer.step()
+                else:
+                    dp_optimizer.step()
             epoch_loss.append(np.mean(batch_loss))
             epoch_acc.append(np.mean(batch_acc))
         return model.state_dict(), np.mean(epoch_loss), np.mean(epoch_acc)
 
-    def draw_new_z(self,current_z, z_min):
+    def draw_new_z(self, current_z, z_min):
         # pdf f(z)=-2*z/(z_max-current_z)^2+2/(z_max-current_z)
         # using inversion method, starts with u~U(0,1), gengerate z=F^(-1)(u)
         # invers func: lambda y: (z_max - current_z) * (1 - np.sqrt(1 - y))
         return (current_z - z_min) * (1 - np.sqrt(1 - np.random.uniform(0, 1)))
 
+    def whether_change(self, prob):
+        """
+        args
+        prob \in (0,1) : the probability of decrease noise_multiplier,
+        determined by acc and participating times
+
+        return
+        p(x<prob) where x~U(0,1)
+        """
+        return True if np.random.uniform(0, 1) < prob else False
+
+    def calculate_prob(self, times, acc):
+        """
+        args
+        x negetively related to participated times, the bigger x is, client is less participated
+        in training, thus the smaller prob to decrease noise_multiplier. Since it is more likely
+        client's data has not been seen by the model yet, and is not appropriate to decrease noise
+        too early-->p(x)=(- 2 * x / expect_times**2 + 2 / expect_times)
+        acc is the testing accuracy, the smaller acc is, the more likey to decrease noise_multiplier
+        --> p(y)=(- 2 * acc / self.args.target_acc**2 + 2 / self.args.target_acc)
+
+        return: rescaled p(x)*p(y), i.e., p(x)/p(x)_max * p(y)/p(y)_max
+        """
+        expect_times = self.args.epochs * self.args.frac
+        x = expect_times - times
+        return (-x / expect_times + 1) * np.abs(
+            -acc / self.args.target_acc + 1)  # abs account for case where acc > target_acc
+
     def update_model(self, global_round, model_weights):
         self.model = self.load_weights(self.model, model_weights)
         optimizer = torch.optim.SGD(self.model.parameters(), lr=self.args.lr, momentum=0.5)
-        # game part, evaluate
+        # game part
         if self.args.is_dp:
-            if self.args.se_game and len(self.eps) > self.args.start_time * self.args.epochs * self.args.frac:
+            if self.args.se_game:
                 acc, _ = self.inference(model_weights)
-                if acc < self.target_acc:
+                prob = self.calculate_prob(len(self.z), acc)
+                assert 0 <= prob < 1, "probability is not right"
+                if self.whether_change(prob) and acc < self.target_acc:
                     self.noise_multiplier -= self.draw_new_z(current_z=self.noise_multiplier, z_min=self.args.min_z)
-                    last_round = list(self.eps.keys())[-1]
-                    print(f'client {self.cid} participated in {len(self.eps)} times,\n '
-                          f'now increase z from {self.eps[last_round]} to {self.noise_multiplier}')
-                else:
+                    last_round = list(self.z.keys())[-1]
+                    print(f'client {self.cid} participated in {len(self.z)} times,\n '
+                          f'now decrease z from {self.z[last_round]} to {self.noise_multiplier}')
+                elif acc > self.target_acc:
                     print(f'client {self.cid} get accuracy: {acc} > target_accuracy: {self.args.target_acc} ')
-
+                else:
+                    pass
             self.model.train()
             dp_optimizer = DPOptimizer(optimizer=optimizer,
-                                     noise_multiplier=self.noise_multiplier,
-                                     max_grad_norm=self.args.max_grad_norm,
-                                     expected_batch_size=self.args.local_bs)
-            train_results = self.train(self.model, dp_optimizer, self.train_loader)
-            self.eps[global_round] = self.noise_multiplier
+                                       noise_multiplier=self.noise_multiplier,
+                                       max_grad_norm=self.args.max_grad_norm,
+                                       expected_batch_size=self.args.local_bs)
+            train_results = self.train(self.model, dp_optimizer, optimizer, self.train_loader)
+            self.z[global_round] = self.noise_multiplier
         else:
             self.model.train()
             train_results = self.train(self.model, optimizer, self.train_loader)

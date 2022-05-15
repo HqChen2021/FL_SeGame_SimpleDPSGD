@@ -16,21 +16,26 @@ if __name__ == '__main__':
     start_time = time.time()
     exp_details(args)
     data_path = '..\data'
-    save_path = '..\save'
+    save_path = os.getcwd() + '/save'
     if not os.path.exists(save_path):
         os.mkdir(save_path)
-    save_path = os.path.join(save_path, '{}_{}_C[{}]_F[{}]_iid[{}]_Epoch[{}]_Lep[{}]_B[{}]_DP[{}]_SE[{}]_STime[{'
-                                        '}]_TAcc[{}]_MinZ[{}].npy'. format(args.dataset, args.model, args.num_clients, args.frac, args.iid, args.epochs,
-                                    args.local_ep, args.local_bs, args.is_dp, int(args.se_game), args.start_time,
-                                    args.target_acc, args.min_z))
+    save_path = os.path.join(save_path, '{}_{}_C[{}]_F[{}]_iid[{}]_Epoch[{}]_Lep[{}]_'
+                                        'B[{}]_DP[{}]_SE[{}]_TAcc[{}]_MaxZ[{}]_MinZ[{}].npy'.
+                             format(args.dataset, args.model, args.num_clients, args.frac,
+                                    args.iid, args.epochs, args.local_ep, args.local_bs,
+                                    args.is_dp, int(args.se_game), args.target_acc, args.noise_multiplier,args.min_z))
     # BUILD MODEL
     if args.is_dp:
         global_model = GradSampleModule(Initialize_Model(args))
         errors = ModuleValidator.validate(global_model, strict=False)
-        if not errors:
+        if errors:
             global_model = ModuleValidator.fix(global_model)
     else:
         global_model = Initialize_Model(args)
+    if hasattr(next(global_model.parameters()), 'grad_sample'):
+        print(f'global model has attribute')
+    else:
+        print(f'global model don\'t have')
     device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
     global_weights = global_model.state_dict()
     # Training
@@ -41,7 +46,7 @@ if __name__ == '__main__':
     # instantiate client objects stored in client_lst
     client_lst = []
     for cid in range(args.num_clients):
-        client_lst.append(client(cid, args, global_model, train_set=TrainSet_per_client[cid],
+        client_lst.append(client(cid, args, train_set=TrainSet_per_client[cid],
                                  test_set=TestSet_per_client[cid]))
     # FL training
     m = max(int(args.frac * args.num_clients), 1)
@@ -62,7 +67,7 @@ if __name__ == '__main__':
                 epoch, selected_clients,
                 [round(n, 3) for n in local_losses_lst],
                 [round(n, 3) for n in local_acc_lst],
-                [round(client_lst[i].eps[epoch], 3) for i in selected_clients]))
+                [round(client_lst[i].z[epoch], 3) for i in selected_clients]))
         else:
             print('Round: {}|\tClient:{}|\tLoss: {}|\tAccuracy: {}|'.format(
                 epoch, selected_clients,
@@ -90,8 +95,10 @@ if __name__ == '__main__':
             best_epoch = epoch
             state.update({
                 'best_avg_acc': best_avg_acc,
+                'best_acc_list':best_acc_list,
                 'best_var': best_var,
                 'configures': args,
+                'best_epoch': epoch,
                 # 'client_lst': client_lst,
                 'sample_count': sample_count,
                 'state_dict': global_weights,  # 保存模型参数
@@ -105,7 +112,7 @@ if __name__ == '__main__':
         client['cid'] = i.cid
         client['deleta'] = i.DELTA
         client['acc'] = i.acc
-        client['eps'] = i.eps
+        client['z'] = i.z
         client['loss'] = i.loss
         client_record.append(client)
     state.update({'client_record': client_record})

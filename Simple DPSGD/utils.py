@@ -10,6 +10,7 @@ from models import MLP, CNN, CNN, CNNCifar
 import sys
 import os
 
+
 def Initialize_Model(args):
     if args.model == 'cnn':
         # Convolutional neural network
@@ -36,8 +37,7 @@ def Initialize_Model(args):
     return global_model
 
 
-
-def dir_sampling(train_set,test_set, num_clients, alpha=0.5):
+def dir_sampling(train_set, test_set, num_clients, alpha=0.5):
     """
     dirichlet_distribution_sampling
     input:  dataset, num_clients, alpha
@@ -83,9 +83,9 @@ def dir_sampling(train_set,test_set, num_clients, alpha=0.5):
             test_proportions = (np.cumsum(proportions) * len(test_idx_of_class_k)).astype(int)[:-1]
             # calculate the cumulative sum of proba list, rule out the last element
             train_data_index = [idx_j + idx.tolist() for idx_j, idx in
-                          zip(train_data_index, np.split(train_idx_of_class_k, train_proportions))]
+                                zip(train_data_index, np.split(train_idx_of_class_k, train_proportions))]
             test_data_index = [idx_j + idx.tolist() for idx_j, idx in
-                                zip(test_data_index, np.split(test_idx_of_class_k, test_proportions))]
+                               zip(test_data_index, np.split(test_idx_of_class_k, test_proportions))]
             # update data_index, distribute samples from class k accorss all clients
         min_size = min([len(idx_j) for idx_j in train_data_index])
         # calulate min_size to see whether need to re-sampling
@@ -126,13 +126,13 @@ def iid_sampling(train_set, test_set, num_clients):
 
 # fig = plot_dis(Train_set_per_client)
 
-def get_dataset(args,data_path):
+def get_dataset(args, data_path):
     """
     returns two list of list. "Train_set_per_client" and "Test_set_per_client"
     Train_set_per_client[i] is the training set of client i
     """
     if args.dataset == 'cifar':
-        data_dir = os.path.join(data_path,'./cifar/')
+        data_dir = os.path.join(data_path, './cifar/')
         apply_transform = transforms.Compose(
             [transforms.ToTensor(),
              transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
@@ -141,7 +141,7 @@ def get_dataset(args,data_path):
         test_set = datasets.CIFAR10(data_dir, train=False, download=True,
                                     transform=apply_transform)
     elif args.dataset == 'mnist':
-        data_dir = os.path.join(data_path,'./mnist/')
+        data_dir = os.path.join(data_path, './mnist/')
         apply_transform = transforms.Compose([
             transforms.ToTensor(),
             transforms.Normalize((0.1307,), (0.3081,))])
@@ -149,14 +149,14 @@ def get_dataset(args,data_path):
         test_set = datasets.MNIST(data_dir, train=False, download=True,
                                   transform=apply_transform)
     elif args.dataset == 'fmnist':
-        data_dir = os.path.join(data_path,'./fmnist/')
+        data_dir = os.path.join(data_path, './fmnist/')
         apply_transform = transforms.Compose([
             transforms.ToTensor(),
             transforms.Normalize((0.1307,), (0.3081,))])
         train_set = datasets.FashionMNIST(data_dir, train=True, download=True,
-                                              transform=apply_transform)
+                                          transform=apply_transform)
         test_set = datasets.FashionMNIST(data_dir, train=False, download=True,
-                                      transform=apply_transform)
+                                         transform=apply_transform)
     if args.iid:
         # client_data_idx_map is a dictionary
         # keys=client index, values = list of sample index
@@ -225,7 +225,8 @@ def exp_details(args):
     print(f'    Local Epochs       : \t{args.local_ep}\n')
 
     print('    DP parameters:')
-    # print(f'    DP mechanism is running') if args.is_dp else print(f'    No DP mechanism is running')
-    print(f'    Target epsilon  : \t{args.epsilon}')
-    print(f'    Noise_multiplier:\t{args.noise_multiplier}')
+    print(f'    DP mechanism is running') if args.is_dp else print(f'    No DP mechanism is running')
     print(f'    max_grad_norm  : \t{args.max_grad_norm}')
+    print(f'    SE game is running') if args.is_dp else print(f'    No SE game is running')
+    print(f'    min_z  : \t{args.min_z}')
+    print(f'    Noise_multiplier:\t{args.noise_multiplier}')
