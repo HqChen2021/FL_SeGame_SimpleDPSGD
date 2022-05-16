@@ -32,14 +32,16 @@ class client(object):
         self.args = args
         self.device = torch.device('cuda') if args.gpu else torch.device('cpu')
         self.criterion = nn.NLLLoss().to(self.device)
-        self.DELTA = 1 / (1.1 * len(train_set))
+        self.delta = 1 / (1.1 * len(train_set))
         self.train_loader = torch.utils.data.DataLoader(
             train_set, batch_size=args.local_bs, shuffle=True)
         self.test_loader = torch.utils.data.DataLoader(
             test_set, batch_size=args.local_bs, shuffle=True)
         self.acc, self.loss, self.z = [], [], {}
+        self.local_best_round, self.best_acc = 0, 0
         self.target_acc = args.target_acc
         self.model = creat_model(args)
+        self.stop_training = False
         hasattr(next(self.model.parameters()), 'grad_sample')
         self.noise_multiplier = self.args.noise_multiplier
 
@@ -58,7 +60,42 @@ class client(object):
                 model.load_state_dict(new_global_weights)
             return model
 
+    def draw_new_z(self, current_z, z_min):
+        # pdf f(z)=-2*z/(z_max-current_z)^2+2/(z_max-current_z)
+        # using inversion method, starts with u~U(0,1), gengerate z=F^(-1)(u)
+        # invers func: lambda y: (z_max - current_z) * (1 - np.sqrt(1 - y))
+        return (current_z - z_min) * (1 - np.sqrt(1 - np.random.uniform(0, 1)))
+
+    def whether_change(self, prob):
+        """
+        args
+        prob \in (0,1) : the probability of decrease noise_multiplier,
+        determined by acc and participating times
+
+        return
+        p(x<prob) where x~U(0,1)
+        """
+        return True if 0.5*np.random.uniform(0, 1) < prob else False
+
+    def calculate_prob(self, times, acc):
+        """
+        args
+        x negetively related to participated times, the bigger x is, client is less participated
+        in training, thus the smaller prob to decrease noise_multiplier. Since it is more likely
+        client's data has not been seen by the model yet, and is not appropriate to decrease noise
+        too early-->p(x)=(- 2 * x / expect_times**2 + 2 / expect_times)
+        acc is the testing accuracy, the smaller acc is, the more likey to decrease noise_multiplier
+        --> p(y)=(- 2 * acc / self.args.target_acc**2 + 2 / self.args.target_acc)
+
+        return: rescaled p(x)*p(y), i.e., p(x)/p(x)_max * p(y)/p(y)_max
+        """
+        expect_times = self.args.epochs * self.args.frac
+        x = expect_times - times
+        return (-x / expect_times + 1) * np.abs(
+            -acc / self.args.target_acc + 1)  # abs account for case where acc > target_acc
+
     def train(self, model, dp_optimizer, optimizer, dataloader):
+        model.train()
         epoch_loss, epoch_acc = [], []
         for epoch in range(self.args.local_ep):
             batch_loss, batch_acc = [], []
@@ -83,47 +120,33 @@ class client(object):
             epoch_acc.append(np.mean(batch_acc))
         return model.state_dict(), np.mean(epoch_loss), np.mean(epoch_acc)
 
-    def draw_new_z(self, current_z, z_min):
-        # pdf f(z)=-2*z/(z_max-current_z)^2+2/(z_max-current_z)
-        # using inversion method, starts with u~U(0,1), gengerate z=F^(-1)(u)
-        # invers func: lambda y: (z_max - current_z) * (1 - np.sqrt(1 - y))
-        return (current_z - z_min) * (1 - np.sqrt(1 - np.random.uniform(0, 1)))
+    def report_res(self, model, dataloader):
+        model.eval()
+        batch_loss, batch_acc = [], []
+        for batch_idx, (images, target) in enumerate(dataloader):
+            images, target = images.to(self.device), target.to(self.device)
+            output = model(images)
+            loss = self.criterion(output, target)
+            batch_loss.append(loss.item())
+            preds = np.argmax(output.detach().cpu().numpy(), axis=1)
+            labels = target.detach().cpu().numpy()
+            batch_acc.append((preds == labels).mean().item())
+        return model.state_dict(), np.mean(batch_loss), np.mean(batch_acc)
 
-    def whether_change(self, prob):
-        """
-        args
-        prob \in (0,1) : the probability of decrease noise_multiplier,
-        determined by acc and participating times
+    def update_model(self, global_round, global_weights):
+        acc, _ = self.inference(global_weights)
+        if acc > self.best_acc:
+            self.model = self.load_weights(self.model, global_weights)
+        if self.stop_training:
+            print(f'client {self.cid} has reached SE and won\'t continue training on local dataset')
+            return self.report_res(self.model, self.train_loader)
+            print(f'this line should not be printed')
 
-        return
-        p(x<prob) where x~U(0,1)
-        """
-        return True if np.random.uniform(0, 1) < prob else False
-
-    def calculate_prob(self, times, acc):
-        """
-        args
-        x negetively related to participated times, the bigger x is, client is less participated
-        in training, thus the smaller prob to decrease noise_multiplier. Since it is more likely
-        client's data has not been seen by the model yet, and is not appropriate to decrease noise
-        too early-->p(x)=(- 2 * x / expect_times**2 + 2 / expect_times)
-        acc is the testing accuracy, the smaller acc is, the more likey to decrease noise_multiplier
-        --> p(y)=(- 2 * acc / self.args.target_acc**2 + 2 / self.args.target_acc)
-
-        return: rescaled p(x)*p(y), i.e., p(x)/p(x)_max * p(y)/p(y)_max
-        """
-        expect_times = self.args.epochs * self.args.frac
-        x = expect_times - times
-        return (-x / expect_times + 1) * np.abs(
-            -acc / self.args.target_acc + 1)  # abs account for case where acc > target_acc
-
-    def update_model(self, global_round, model_weights):
-        self.model = self.load_weights(self.model, model_weights)
+        self.model = self.load_weights(self.model, global_weights)
         optimizer = torch.optim.SGD(self.model.parameters(), lr=self.args.lr, momentum=0.5)
         # game part
-        if self.args.is_dp:
+        if self.args.is_dp :
             if self.args.se_game:
-                acc, _ = self.inference(model_weights)
                 prob = self.calculate_prob(len(self.z), acc)
                 assert 0 <= prob < 1, "probability is not right"
                 if self.whether_change(prob) and acc < self.target_acc:
@@ -132,10 +155,15 @@ class client(object):
                     print(f'client {self.cid} participated in {len(self.z)} times,\n '
                           f'now decrease z from {self.z[last_round]} to {self.noise_multiplier}')
                 elif acc > self.target_acc:
+                    # if target acc is obtained, the client could chose stop training, just kept the local best model
+                    # and update the parameters to the server. Only update model if the assigned global model
+                    # outperforms the local best one. By stop training, the client could stop increasing privacy cost.
+                    self.stop_training = True
+                    self.best_acc = acc
+                    self.model = self.load_weights(self.model, global_weights)
                     print(f'client {self.cid} get accuracy: {acc} > target_accuracy: {self.args.target_acc} ')
                 else:
                     pass
-            self.model.train()
             dp_optimizer = DPOptimizer(optimizer=optimizer,
                                        noise_multiplier=self.noise_multiplier,
                                        max_grad_norm=self.args.max_grad_norm,
@@ -143,7 +171,6 @@ class client(object):
             train_results = self.train(self.model, dp_optimizer, optimizer, self.train_loader)
             self.z[global_round] = self.noise_multiplier
         else:
-            self.model.train()
             train_results = self.train(self.model, optimizer, self.train_loader)
         return train_results
 
