@@ -53,7 +53,6 @@ if __name__ == '__main__':
     best_epoch, best_avg_acc, best_acc_list, state = 0, 0, [], {}
     for epoch in tqdm(range(args.epochs)):
         local_weights_lst, local_losses_lst, local_acc_lst = [], [], []
-
         selected_clients = np.random.choice(range(args.num_clients), m, replace=False)
         for cid in selected_clients:
             w, loss, acc = client_lst[cid].update_model(
@@ -63,13 +62,13 @@ if __name__ == '__main__':
             local_acc_lst.append(copy.deepcopy(acc))
 
         if args.is_dp:
-            print('Round: {}|\tClient:{}|\tLoss: {}|\tAccuracy: {}|\tε={}'.format(
+            print('\nRound: {}|\tClient:{}|\tLoss: {}|\tAccuracy: {}|\tε={}'.format(
                 epoch, selected_clients,
                 [round(n, 3) for n in local_losses_lst],
                 [round(n, 3) for n in local_acc_lst],
                 [round(client_lst[i].z[epoch], 3) for i in selected_clients]))
         else:
-            print('Round: {}|\tClient:{}|\tLoss: {}|\tAccuracy: {}|'.format(
+            print('\nRound: {}|\tClient:{}|\tLoss: {}|\tAccuracy: {}|'.format(
                 epoch, selected_clients,
                 [round(n, 3) for n in local_losses_lst],
                 [round(n, 3) for n in local_acc_lst]))
@@ -86,6 +85,8 @@ if __name__ == '__main__':
             acc, loss = client_lst[cid].inference(global_weights)
             list_acc.append(round(acc, 3))
             list_loss.append(loss)
+        print('inference accuracy on all clients:{}'.format(
+            [round(n, 3) for n in list_acc]))
         avg_test_accuracy.append(sum(list_acc) / len(list_acc))
         state['Avg_test_acc'] = avg_test_accuracy
         if avg_test_accuracy[-1] > best_avg_acc:
@@ -104,13 +105,13 @@ if __name__ == '__main__':
                 'state_dict': global_weights,  # 保存模型参数
             })
 
-        print('\nBest_acc:{:.2%}, epoch:{:d}, variance:{:.2%} \nacc_lst:{}'.
+        print('Best_acc:{:.2%}, epoch:{:d}, variance:{:.2%} \nacc_lst:{}'.
               format(best_avg_acc, best_epoch, best_var, best_acc_list))
     client_record=[]
     for i in client_lst:
         client = {}
         client['cid'] = i.cid
-        client['deleta'] = i.DELTA
+        client['deleta'] = i.delta
         client['acc'] = i.acc
         client['z'] = i.z
         client['loss'] = i.loss

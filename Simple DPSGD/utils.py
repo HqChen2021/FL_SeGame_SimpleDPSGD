@@ -213,12 +213,13 @@ def average_weights(w):
 def exp_details(args):
     print('\nExperimental details:')
     print(f'    Model     : {args.model}')
+    print(f'    Dataset     : {args.dataset}')
     print(f'    Optimizer : {args.optimizer}')
     print(f'    Learning  : {args.lr}')
     print(f'    Global Rounds   : {args.epochs}\n')
     print('    Federated parameters:')
     print('    IID') if args.iid else print('    Non-IID')
-
+    print(f'    Keep local best') if args.keep_local_best else print(f'    Use global model')
     print(f'    Total #users  :      \t{args.num_clients}')
     print(f'    Fraction of users  : \t{args.frac}')
     print(f'    Local Batch size   : \t{args.local_bs}')
