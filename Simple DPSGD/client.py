@@ -28,6 +28,9 @@ def creat_model(args):
 
 class client(object):
     def __init__(self, cid, args, train_set, test_set):
+        self.se_train_res = None
+        self.best_acc = None
+        self.best_loss = None
         self.cid = cid
         self.args = args
         self.device = torch.device('cuda') if args.gpu else torch.device('cpu')
@@ -37,11 +40,11 @@ class client(object):
             train_set, batch_size=args.local_bs, shuffle=True)
         self.test_loader = torch.utils.data.DataLoader(
             test_set, batch_size=args.local_bs, shuffle=True)
-        self.acc, self.loss, self.z = [], [], {}
+        self.test_acc, self.test_loss, self.z = [], [], {}
         self.local_best_round, self.best_acc = 0, 0
         self.target_acc = args.target_acc
         self.model = creat_model(args)
-        self.stop_training = False
+        self.is_se = False
         hasattr(next(self.model.parameters()), 'grad_sample')
         self.noise_multiplier = self.args.noise_multiplier
 
@@ -91,7 +94,7 @@ class client(object):
         """
         expect_times = self.args.epochs * self.args.frac
         x = expect_times - times
-        return (-x / expect_times + 1) * np.abs(
+        return min((-x / expect_times + 1),1) * np.abs(
             -acc / self.args.target_acc + 1)  # abs account for case where acc > target_acc
 
     def train(self, model, dp_optimizer, optimizer, dataloader):
@@ -120,63 +123,74 @@ class client(object):
             epoch_acc.append(np.mean(batch_acc))
         return model.state_dict(), np.mean(epoch_loss), np.mean(epoch_acc)
 
-    def report_res(self, model, dataloader):
-        model.eval()
-        batch_loss, batch_acc = [], []
-        for batch_idx, (images, target) in enumerate(dataloader):
-            images, target = images.to(self.device), target.to(self.device)
-            output = model(images)
-            loss = self.criterion(output, target)
-            batch_loss.append(loss.item())
-            preds = np.argmax(output.detach().cpu().numpy(), axis=1)
-            labels = target.detach().cpu().numpy()
-            batch_acc.append((preds == labels).mean().item())
-        return model.state_dict(), np.mean(batch_loss), np.mean(batch_acc)
+    # def report_res(self, model, dataloader):
+    #     model.eval()
+    #     batch_loss, batch_acc = [], []
+    #     for batch_idx, (images, target) in enumerate(dataloader):
+    #         images, target = images.to(self.device), target.to(self.device)
+    #         output = model(images)
+    #         loss = self.criterion(output, target)
+    #         batch_loss.append(loss.item())
+    #         preds = np.argmax(output.detach().cpu().numpy(), axis=1)
+    #         labels = target.detach().cpu().numpy()
+    #         batch_acc.append((preds == labels).mean().item())
+    #     return model.state_dict(), np.mean(batch_loss), np.mean(batch_acc)
 
     def update_model(self, global_round, global_weights):
-        acc, _ = self.inference(global_weights)
-        if acc > self.best_acc:
-            self.model = self.load_weights(self.model, global_weights)
-        if self.stop_training:
-            print(f'client {self.cid} has reached SE and won\'t continue training on local dataset')
-            return self.report_res(self.model, self.train_loader)
-            print(f'this line should not be printed')
+        test_acc, _ = self.inference(global_weights, use_local_best = False)
+        # if is_se is true, client[cid] is already SE, but what if current model is better than last SE one?
+        if self.is_se:
+            if test_acc >= self.best_acc:
+                self.model = self.load_weights(self.model, global_weights)
+                print(f'\nclient {self.cid} increase from {self.best_acc:}(old SE) to {test_acc}(new SE)')
+                self.best_acc = test_acc
+            else:
+                print(f'\nclient {self.cid} with test_acc {self.best_acc} is already satisfied')
+            self.z[global_round] = self.noise_multiplier
+            # here directly share model parameters, is this DP? DP post-processing? the preceding training is DP
+            # return self.report_res(self.model, self.train_loader)
+            # return self.se_train_res
 
         self.model = self.load_weights(self.model, global_weights)
         optimizer = torch.optim.SGD(self.model.parameters(), lr=self.args.lr, momentum=0.5)
         # game part
         if self.args.is_dp :
             if self.args.se_game:
-                prob = self.calculate_prob(len(self.z), acc)
+                prob = self.calculate_prob(len(self.z), test_acc)
                 assert 0 <= prob < 1, "probability is not right"
-                if self.whether_change(prob) and acc < self.target_acc:
+                if self.whether_change(prob) and test_acc < self.target_acc:
                     self.noise_multiplier -= self.draw_new_z(current_z=self.noise_multiplier, z_min=self.args.min_z)
                     last_round = list(self.z.keys())[-1]
-                    print(f'client {self.cid} participated in {len(self.z)} times,\n '
+                    print(f'\nclient {self.cid} participated in {len(self.z)} times,'
                           f'now decrease z from {self.z[last_round]} to {self.noise_multiplier}')
-                elif acc > self.target_acc:
+                elif test_acc > self.target_acc:
                     # if target acc is obtained, the client could chose stop training, just kept the local best model
                     # and update the parameters to the server. Only update model if the assigned global model
                     # outperforms the local best one. By stop training, the client could stop increasing privacy cost.
-                    self.stop_training = True
-                    self.best_acc = acc
+                    self.is_se = True
+                    self.best_acc = test_acc
                     self.model = self.load_weights(self.model, global_weights)
-                    print(f'client {self.cid} get accuracy: {acc} > target_accuracy: {self.args.target_acc} ')
-                else:
-                    pass
+                    print(f'\nclient {self.cid} get accuracy: {test_acc} > target_accuracy: {self.args.target_acc} ')
             dp_optimizer = DPOptimizer(optimizer=optimizer,
                                        noise_multiplier=self.noise_multiplier,
                                        max_grad_norm=self.args.max_grad_norm,
                                        expected_batch_size=self.args.local_bs)
             train_results = self.train(self.model, dp_optimizer, optimizer, self.train_loader)
+            if self.is_se:
+                self.se_train_res = train_results
+
             self.z[global_round] = self.noise_multiplier
         else:
             train_results = self.train(self.model, optimizer, self.train_loader)
         return train_results
 
-    def inference(self, model_weights):
-        model = Initialize_Model(self.args)
-        model = self.load_weights(model, model_weights)
+    def inference(self, model_weights, use_local_best = True):
+        if use_local_best and self.is_se:
+            model = self.model
+            print(f'client[{self.cid} use local best model, with test acc {self.best_acc }')
+        else:
+            model = Initialize_Model(self.args)
+            model = self.load_weights(model, model_weights)
         model.eval()
         batch_acc, batch_loss = [], []
         for batch_idx, (images, target) in enumerate(self.test_loader):
@@ -187,6 +201,11 @@ class client(object):
             preds = np.argmax(output.detach().cpu().numpy(), axis=1)
             labels = target.detach().cpu().numpy()
             batch_acc.append((preds == labels).mean().item())
-        self.acc.append(np.mean(batch_acc))
-        self.loss.append(np.mean(batch_acc))
+        self.test_acc.append(np.mean(batch_acc))
+        self.test_loss.append(np.mean(batch_acc))
+        # if np.mean(batch_acc) >= self.best_acc:
+        #     self.best_acc = np.mean(batch_acc)
+        #     self.best_loss = np.mean(batch_loss)
+        #     return np.mean(batch_acc), np.mean(batch_loss)
+        # else:
         return np.mean(batch_acc), np.mean(batch_loss)

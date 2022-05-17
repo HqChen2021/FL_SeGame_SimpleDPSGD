@@ -62,7 +62,7 @@ if __name__ == '__main__':
             local_acc_lst.append(copy.deepcopy(acc))
 
         if args.is_dp:
-            print('\nRound: {}|\tClient:{}|\tLoss: {}|\tAccuracy: {}|\tε={}'.format(
+            print('\nRound: {}|\tClient:{}|\tLoss: {}|\tTrain_acc: {}|\tz={}'.format(
                 epoch, selected_clients,
                 [round(n, 3) for n in local_losses_lst],
                 [round(n, 3) for n in local_acc_lst],
@@ -85,7 +85,7 @@ if __name__ == '__main__':
             acc, loss = client_lst[cid].inference(global_weights)
             list_acc.append(round(acc, 3))
             list_loss.append(loss)
-        print('inference accuracy on all clients:{}'.format(
+        print('test accuracy on all clients:{}'.format(
             [round(n, 3) for n in list_acc]))
         avg_test_accuracy.append(sum(list_acc) / len(list_acc))
         state['Avg_test_acc'] = avg_test_accuracy
@@ -105,16 +105,16 @@ if __name__ == '__main__':
                 'state_dict': global_weights,  # 保存模型参数
             })
 
-        print('Best_acc:{:.2%}, epoch:{:d}, variance:{:.2%} \nacc_lst:{}'.
+        print('Best_acc:{:.2%}, epoch:{:d}, variance:{:.2%} \nacc_lst:{}\n'.
               format(best_avg_acc, best_epoch, best_var, best_acc_list))
     client_record=[]
     for i in client_lst:
         client = {}
         client['cid'] = i.cid
         client['deleta'] = i.delta
-        client['acc'] = i.acc
+        client['test_acc'] = i.test_acc
         client['z'] = i.z
-        client['loss'] = i.loss
+        client['test_loss'] = i.test_loss
         client_record.append(client)
     state.update({'client_record': client_record})
     torch.save(state, save_path)
